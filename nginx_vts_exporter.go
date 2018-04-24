@@ -15,6 +15,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/prometheus/common/version"
+	"net"
 )
 
 type NginxVts struct {
@@ -349,10 +350,11 @@ func fetchHTTP(uri string, timeout time.Duration) func() (io.ReadCloser, error) 
 
 var (
 	showVersion        = flag.Bool("version", false, "Print version information.")
-	listenAddress      = flag.String("telemetry.address", ":9913", "Address on which to expose metrics.")
+	listenAddress      = flag.String("unix-sock", "/dev/shm/nginxvts_exporter.sock",
+		"Address on which to expose metrics.")
 	metricsEndpoint    = flag.String("telemetry.endpoint", "/metrics", "Path under which to expose metrics.")
 	metricsNamespace   = flag.String("metrics.namespace", "nginx", "Prometheus metrics namespace.")
-	nginxScrapeURI     = flag.String("nginx.scrape_uri", "http://localhost/status", "URI to nginx stub status page")
+	nginxScrapeURI     = flag.String("nginx.scrape_uri", "http://localhost:10000/status", "URI to nginx stub status page")
 	insecure           = flag.Bool("insecure", true, "Ignore server certificate if using https")
 	nginxScrapeTimeout = flag.Int("nginx.scrape_timeout", 2, "The number of seconds to wait for an HTTP response from the nginx.scrape_uri")
 )
@@ -377,20 +379,25 @@ func main() {
 	prometheus.Unregister(prometheus.NewProcessCollector(os.Getpid(), ""))
 	prometheus.Unregister(prometheus.NewGoCollector())
 
-	http.Handle(*metricsEndpoint, promhttp.Handler())
-	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+	mux := http.NewServeMux()
+	mux.Handle(*metricsEndpoint, prometheus.Handler())
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte(`<html>
-			<head><title>Nginx Exporter</title></head>
-			<body>
-			<h1>Nginx Exporter</h1>
-			<p><a href="` + *metricsEndpoint + `">Metrics</a></p>
-			</body>
-			</html>`))
+             <head><title>Nginx Vts Exporter</title></head>
+             <body>
+             <h1>Nginx Vts Exporter</h1>
+             <p><a href='` + *metricsEndpoint + `'>Metrics</a></p>
+             </body>
+             </html>`))
 	})
+	server := http.Server{
+		Handler: mux, // http.DefaultServeMux,
+	}
+	os.Remove(*listenAddress)
 
-	log.Printf("Starting Server at : %s", *listenAddress)
-	log.Printf("Metrics endpoint: %s", *metricsEndpoint)
-	log.Printf("Metrics namespace: %s", *metricsNamespace)
-	log.Printf("Scraping information from : %s", *nginxScrapeURI)
-	log.Fatal(http.ListenAndServe(*listenAddress, nil))
+	listener, err := net.Listen("unix", *listenAddress)
+	if err != nil {
+		panic(err)
+	}
+	server.Serve(listener)
 }
